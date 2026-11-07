@@ -26,9 +26,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
@@ -41,6 +44,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -48,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,12 +68,15 @@ import androidx.core.content.ContextCompat
 import java.io.IOException
 import java.io.OutputStream
 import java.util.UUID
+import kotlin.math.roundToInt
 
 private val Navy = Color(0xFF101827)
 private val Panel = Color(0xFF1E293B)
 private val Blue = Color(0xFF2563EB)
 private val Muted = Color(0xFF94A3B8)
 private val Red = Color(0xFFDC2626)
+private val Green = Color(0xFF16A34A)
+private val Amber = Color(0xFFD97706)
 
 class MainActivity : ComponentActivity() {
     private var controller: BluetoothController? = null
@@ -79,15 +88,13 @@ class MainActivity : ComponentActivity() {
         val adapter = manager.adapter
 
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Blue,
-                    background = Navy,
-                    surface = Panel,
-                    onBackground = Color.White,
-                    onSurface = Color.White
-                )
-            ) {
+            MaterialTheme(colorScheme = darkColorScheme(
+                primary = Blue,
+                background = Navy,
+                surface = Panel,
+                onBackground = Color.White,
+                onSurface = Color.White
+            )) {
                 AutoCarScreen(
                     adapter = adapter,
                     onControllerReady = { controller = it }
@@ -103,6 +110,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * Bluetooth Controller implementation handling BT-06 RFCOMM Socket & Fallback
+ */
 class BluetoothController(
     private val adapter: BluetoothAdapter,
     private val onStatus: (String) -> Unit,
@@ -123,12 +133,11 @@ class BluetoothController(
                 try { adapter.cancelDiscovery() } catch (_: SecurityException) {}
                 closeSocket()
 
-                // Try standard SPP UUID connection first
+                // Try standard SPP connection, fallback to reflection channel 1 on handshake timeout
                 try {
                     socket = device.createRfcommSocketToServiceRecord(sppUuid)
                     socket?.connect()
                 } catch (e: IOException) {
-                    // FALLBACK: Use reflection on RFCOMM channel 1 if standard socket fails
                     val method = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
                     socket = method.invoke(device, 1) as BluetoothSocket
                     socket?.connect()
@@ -181,14 +190,8 @@ class BluetoothController(
     }
 
     private fun closeSocket() {
-        try {
-            outputStream?.close()
-        } catch (_: Exception) {}
-
-        try {
-            socket?.close()
-        } catch (_: Exception) {}
-
+        try { outputStream?.close() } catch (_: Exception) {}
+        try { socket?.close() } catch (_: Exception) {}
         outputStream = null
         socket = null
     }
@@ -215,6 +218,7 @@ private fun AutoCarScreen(
     var selectedDevice by remember { mutableStateOf<BluetoothDevice?>(null) }
     var menuExpanded by remember { mutableStateOf(false) }
     var modeMessage by remember { mutableStateOf("Use M to switch the car's mode") }
+    var speedValue by remember { mutableFloatStateOf(50f) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -253,13 +257,20 @@ private fun AutoCarScreen(
         if (hasPermission) refreshPairedDevices(adapter) { pairedDevices = it }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Navy) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+        color = Navy
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(horizontal = 20.dp, vertical = 14.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Top Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -284,8 +295,9 @@ private fun AutoCarScreen(
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
+            // Connection Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Panel),
@@ -361,41 +373,111 @@ private fun AutoCarScreen(
                         ) { Text("Disconnect") }
                     }
                     Spacer(Modifier.height(6.dp))
-                    Text(
-                        status,
-                        color = if (status.startsWith("Connected")) Color(0xFF86EFAC) else Muted,
-                        fontSize = 12.sp
+                    Text(status, color = if (status.startsWith("Connected")) Color(0xFF86EFAC) else Muted, fontSize = 12.sp)
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // Speed Control Slider Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Panel),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("MOTOR SPEED CONTROL", color = Muted, fontSize = 11.sp, letterSpacing = 1.3.sp)
+                        Text("${speedValue.roundToInt()}%", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = speedValue,
+                        onValueChange = { speedValue = it },
+                        onValueChangeFinished = {
+                            val speedStep = (speedValue / 100f * 9f).roundToInt()
+                            bluetoothController?.send('V')
+                            bluetoothController?.send(speedStep.toString()[0])
+                        },
+                        valueRange = 0f..100f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Blue,
+                            activeTrackColor = Blue,
+                            inactiveTrackColor = Navy
+                        )
                     )
                 }
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(16.dp))
             Text("MOVEMENT CONTROL", color = Muted, fontSize = 12.sp, letterSpacing = 1.5.sp)
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
 
+            // D-PAD
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 ControlButton("W", "▲", Blue, { bluetoothController?.send('W') }, { bluetoothController?.send('X') })
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ControlButton("A", "◀", Panel, { bluetoothController?.send('A') }, { bluetoothController?.send('X') })
                     Button(
                         onClick = { bluetoothController?.send('X') },
-                        modifier = Modifier.size(width = 104.dp, height = 88.dp),
+                        modifier = Modifier.size(width = 96.dp, height = 80.dp),
                         shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Red)
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("■", fontSize = 23.sp)
-                            Text("STOP", fontWeight = FontWeight.Bold)
+                            Text("■", fontSize = 20.sp)
+                            Text("STOP", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                     ControlButton("D", "▶", Panel, { bluetoothController?.send('D') }, { bluetoothController?.send('X') })
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
                 ControlButton("S", "▼", Blue, { bluetoothController?.send('S') }, { bluetoothController?.send('X') })
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(16.dp))
+
+            // Claw Actions (F & G)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Panel),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("CLAW ACTION", color = Muted, fontSize = 11.sp, letterSpacing = 1.3.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { bluetoothController?.send('F') },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Green)
+                        ) {
+                            Text("GRAB (F)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                        Button(
+                            onClick = { bluetoothController?.send('G') },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Amber)
+                        ) {
+                            Text("RELEASE (G)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Driving Mode Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Panel),
@@ -418,7 +500,7 @@ private fun AutoCarScreen(
                 }
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -440,7 +522,7 @@ private fun ControlButton(
 ) {
     Surface(
         modifier = Modifier
-            .size(width = 104.dp, height = 88.dp)
+            .size(width = 96.dp, height = 80.dp)
             .pointerInput(command) {
                 detectTapGestures(
                     onPress = {
@@ -462,8 +544,8 @@ private fun ControlButton(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(symbol, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Text(command, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(symbol, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(command, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         }
     }
 }
